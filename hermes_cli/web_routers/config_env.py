@@ -13,7 +13,7 @@ import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    config_scoped_to_thread, redacted_credential_preview, scoped_to_thread,
 )
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
@@ -849,16 +849,38 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         return response
 
 
+def _saved_endpoint_probe_key(body: CustomEndpointUpdate) -> str:
+    """Reuse an omitted key only for the saved endpoint's exact URL, inside its profile scope."""
+    from hermes_cli.model_switch import _scoped_key_env
+
+    cfg = load_config()
+    _, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), body.id)
+    if entry is None:
+        entry = next((e for e in get_compatible_custom_providers(cfg)
+                      if not e.get("provider_key") and _custom_endpoint_id(e["name"]) == body.id), None)
+    if entry is None:
+        return ""
+    saved_url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip().rstrip("/")
+    if saved_url != body.base_url.strip().rstrip("/"):
+        # Editing the host OR proxy path must not forward the stored credential to a new target.
+        return ""
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    return _scoped_key_env(key_env) if key_env else str(entry.get("api_key") or "").strip()
+
+
 @router.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
+async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    api_key = (body.api_key or "").strip()
+    if body.api_key is None and body.id:
+        api_key = await config_scoped_to_thread(profile, lambda: _saved_endpoint_probe_key(body))
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:
@@ -923,7 +945,7 @@ def _no_models_probe_message(resp: Any, base_url: str) -> str:
 
 async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
-    first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
+    first does not answer a JSON model list. Returns ``(resolved_base_url, response)`` — the base that served the
     model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
     URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
     (#65488). ``response`` is None when no candidate could be reached at all."""
@@ -936,12 +958,21 @@ async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]
                 candidate_resp = await client.get(candidate + "/models", headers=headers)
             except Exception:
                 continue
-            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
-            # there, key rejected", which beats the typed root's 404 (wrong path).
-            if resp is None or candidate_resp.is_success or resp.status_code == 404:
-                resolved, resp = candidate, candidate_resp
+            # Auth rejection identifies an API route: never mask it with a dashboard's 200 HTML.
+            if candidate_resp.status_code in (401, 403):
+                return candidate, candidate_resp
             if candidate_resp.is_success:
-                break
+                try:
+                    payload = candidate_resp.json()
+                except ValueError:
+                    payload = None
+                data = payload.get("data") if isinstance(payload, dict) else payload
+                if isinstance(data, list):
+                    # An empty catalog is still an API, not a reason to strip its prefix.
+                    return candidate, candidate_resp
+            # Preserve the first useful diagnostic if neither candidate has a catalog.
+            if resp is None or resp.status_code == 404:
+                resolved, resp = candidate, candidate_resp
     return resolved, resp
 
 

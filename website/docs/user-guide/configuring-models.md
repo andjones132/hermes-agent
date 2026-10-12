@@ -224,6 +224,19 @@ providers:
 
 With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
 
+The desktop/dashboard custom-endpoint validator probes `/models` and, if the
+response is not a JSON model list, tries the `/v1` alternate while preserving any
+proxy prefix (for example, `/openai`). An HTTP 200 dashboard HTML page is not a
+model catalog. A 401/403 stops discovery as an authentication failure; an empty
+JSON catalog stops alternate probing but still reports that no models were found.
+
+When validating a saved endpoint without submitting an API key, the validator
+resolves its saved credential within the selected profile only if the endpoint ID
+resolves and the full base URL matches (ignoring surrounding whitespace and trailing
+slashes). Changing the host or proxy path does not reuse the saved key. An explicit
+replacement key takes precedence, and an explicit empty key disables reuse.
+Validation does not save configuration or change the selected model.
+
 **`openai_native_compaction`** — set this capability to `true` only for an OpenAI-compatible endpoint that you trust with conversation content. Native compaction sends its payload to that provider's configured `base_url`:
 
 ```yaml
