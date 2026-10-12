@@ -774,7 +774,7 @@ DEFAULT_CONFIG = {
         "title_generation": {
             "enabled": True,
             "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
+            "provider_policy": "legacy",  # strict requires a complete custom chat route; auto fails
             "provider": "auto",
             "model": "",
             "prefer_fast_model": False,

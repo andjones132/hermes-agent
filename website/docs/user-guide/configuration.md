@@ -1453,6 +1453,75 @@ The main model and conversation history still retain the full skill content.
 Attachment-only turns retain the existing enriched-message title fallback.
 This affects new title generation; it does not repair previously named sessions.
 
+### Strict title-provider policy (opt-in)
+
+`auxiliary.title_generation.provider_policy` defaults to `legacy`, preserving the
+existing availability-first routing and recovery behavior. `strict` instead rejects
+an incomplete route and, after permitted same-client retries, raises rather than
+entering provider discovery, main-model fallback, task/main fallback chains or
+credential refresh/pool recovery. Invalid policy values raise; they do not silently
+select `legacy`. The title caller catches failures and returns no model-generated
+upgrade; its deterministic derived title remains available.
+
+**Setting only `provider_policy: strict` on the default `provider: auto` with empty
+routing fields does not select a local endpoint. It prevents model titles.** A
+future title-only pilot needs separate authorization and a complete, audited route.
+This illustrative block is not a live configuration or a deployment recommendation:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider_policy: strict
+    provider: custom
+    model: "REPLACE_WITH_AUDITED_MODEL_ID"
+    base_url: "https://audited-title-endpoint.invalid/v1"
+    key_env: "REPLACE_WITH_ROUTE_KEY_ENV_NAME"
+    api_mode: chat_completions
+```
+
+Replace every placeholder with separately verified settings before authorizing any
+application. Do not guess model IDs, endpoint addresses or credentials; fixture
+values are not endpoint-capability evidence. `key_env` (alias `api_key_env`) names
+an explicit route credential source, not its value. Keep secrets out of settings
+and documentation. Strict does not borrow the main key or search ambient provider
+keys. An explicit nonempty route `api_key` supplied by trusted code is also accepted.
+
+Supported identities are inline `custom` or a named custom entry such as
+`custom:<audited-name>` in `providers:`. A named entry may supply the concrete
+HTTP(S) `base_url` (without userinfo), route key-env reference and
+`api_mode: chat_completions`; the title task must still pin its own model and policy.
+Only the selected named entry's configured credential source is resolved. `auto`,
+`main`, native/OAuth/Responses adapters, key-command refresh and route discovery are
+not supported under strict. The client disables HTTP redirects, environment proxy
+selection and SDK retries; existing same-client compatibility/transient retries
+remain. Custom-header/certificate/proxy requirements need separate compatibility
+review.
+
+Limits of this opt-in client-recovery policy:
+
+- It is **not a persistent deny rule or a hard spending guarantee**. Deleted or
+  valid-empty configuration, a malformed task block, or cold malformed YAML with
+  no last-good config/backup can restore `legacy`. Warm malformed YAML can preserve
+  strict via last-known-good state; a saved backup can also affect recovery.
+- Trusted callers can override `base_url` and reuse the task credential at that new
+  destination. `extra_body.model` can override the selected model in SDK wire JSON.
+  This is not an endpoint/key-origin sandbox or an immutable model allowlist. The
+  ordinary title caller supplies neither of those overrides; inherited request
+  bodies still need audit.
+- The selected server can proxy/fall back elsewhere. Server-side routing, managed
+  Relay rewrites and trusted plugins/middleware are outside this policy. An endpoint
+  name is not proof of local inference.
+- Retries may repeat delivered requests; this is not exactly-once execution or a
+  cost cap. Missing model titles are the intended tradeoff for unavailable routes.
+
+This registration and proposal are title-first, not activation for other tasks.
+Leave main routing, existing fallback configuration, memory rewriting, curator,
+triage and other auxiliary tasks unchanged. The shared client can read the policy,
+but this does not certify every auxiliary caller or authorize a broader rollout.
+No config-version migration is required: the new default deep-merges as `legacy`.
+Changing/removing strict or losing it through a config writer changes the policy;
+a pilot must review those writers and explicitly accept the config-loss limitation.
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, vision) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:
@@ -1511,7 +1580,7 @@ auxiliary:
     reasoning_effort: "none"   # disable thinking for image description
 ```
 
-When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
+Under the default `legacy` policy, when `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL. The provider aliases and recovery conveniences below describe legacy behavior; [strict title routing](#strict-title-provider-policy-opt-in) requires a complete custom chat route instead.
 
 Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](../reference/environment-variables.md) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
 
@@ -1587,12 +1656,14 @@ auxiliary:
   title_generation:
     enabled: true              # set false to disable auto-title generation
     model_upgrade_enabled: true  # set false to keep the instant derived title, never call a model
+    provider_policy: legacy    # strict requires the complete audited custom chat route above
     provider: "auto"
     model: ""
     base_url: ""
     api_key: ""
     timeout: 30
     language: ""
+    # max_concurrency: 2       # Optional: cap simultaneous title-generation calls
 
   # Skills hub — skill matching and search
   skills_hub:
@@ -1609,15 +1680,6 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30
-
-  # Auto-generated short session titles after the first exchange
-  title_generation:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-    # max_concurrency: 2       # Optional: cap simultaneous title-generation calls
 
   # Kanban triage specifier — `hermes kanban specify <id>` (or the
   # dashboard's ✨ Specify button on Triage-column cards) uses this

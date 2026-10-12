@@ -6014,7 +6014,7 @@ def _compat_model(client: Any, model: Optional[str], cached_default: Optional[st
 def _get_cached_client(
     provider: str, model: str | None = None, async_mode: bool = False, base_url: str | None = None,
     api_key: str | None = None, api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None,
-    is_vision: bool = False, task: Optional[str] = None,
+    is_vision: bool = False, task: Optional[str] = None, strict_provider: bool = False,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -6028,17 +6028,21 @@ def _get_cached_client(
     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
     from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
-    local = bare_llamacpp_endpoint(provider, base_url, api_key)
+    local = None if strict_provider else bare_llamacpp_endpoint(provider, base_url, api_key)
     if local is not None:
         if not local[0]:
             return None, None
         base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
-    cache_key = _client_cache_key(
-        provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
-        main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
-    )
+    if strict_provider:
+        from agent.auxiliary_routing_policy import strict_cache_key
+        cache_key = strict_cache_key(provider, model, base_url, api_key, api_mode, async_mode)
+    else:
+        cache_key = _client_cache_key(
+            provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
+            main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
+        )
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -6059,10 +6063,14 @@ def _get_cached_client(
         _pe = _peek_pool_entry(_normalize_aux_provider(provider))
         if _pe is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
-    client, default_model = resolve_provider_client(
-        provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
-        api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
-    )
+    if strict_provider:
+        from agent.auxiliary_routing_policy import strict_client
+        client, default_model = strict_client(model, base_url, api_key, async_mode)
+    else:
+        client, default_model = resolve_provider_client(
+            provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
+            api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
+        )
     if client is not None and _aux_probe_active():
         # Availability probes answer "resolvable?" and must leave the cache untouched: the
         # probe stub (bare, or wrapped in a Codex/Anthropic adapter whose leaf is the stub)
@@ -7405,72 +7413,6 @@ async def _acreate_with_progress(
 # only in how a request is awaited, so route resolution and the ordered recovery ladder are
 # written once. The ladder is a generator yielding ``_LadderStep`` requests and receiving the
 # response (or thrown exception), so rung ORDER and accept/re-raise contracts match on both wires.
-class _ResolvedAuxRoute(NamedTuple):
-    client: Any
-    final_model: Optional[str]
-    resolved_provider: str
-    effective_provider: str
-
-
-def _resolve_call_client(
-    task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
-    api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
-    resolved_base_url: Optional[str], resolved_api_key: Optional[str],
-    resolved_api_mode: Optional[str], main_runtime: Optional[dict[str, Any]], async_mode: bool,
-) -> _ResolvedAuxRoute:
-    """Resolve the client for one aux call: vision chain, or cached text client with the
-    explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
-    effective_provider = resolved_provider
-    if task == "vision":
-        effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=resolved_provider if resolved_provider != "auto" else provider,
-            model=resolved_model or model, base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
-        )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
-        if client is not None:
-            resolved_provider = effective_provider or resolved_provider
-    else:
-        client, final_model = _get_cached_client(
-            resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
-            api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
-            task=task)
-        effective_provider = _effective_provider_for_client(client, resolved_provider)
-        if client is None:
-            # Explicit provider with no credentials: honor the task fallback_chain before
-            # raising (fallback entries may use OAuth / credential-pool auth).
-            _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
-                    task, _explicit)
-                if fb_client is None:
-                    nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
-                    raise AuxiliaryClientUnavailable(
-                        nous_detail or missing_provider_credentials_message(_explicit))
-                client, final_model = fb_client, fb_model
-                if async_mode:
-                    client, final_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision"))
-                resolved_provider = fb_label or resolved_provider
-                effective_provider = resolved_provider
-            # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
-            # model=None so each provider uses its own default.
-            if client is None and not resolved_base_url:
-                logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
-                            task or "call", resolved_provider)
-                client, final_model = _get_cached_client(
-                    "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
-                effective_provider = _effective_provider_for_client(client, "auto")
-    if client is None:
-        raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
-                                         f"provider={resolved_provider}. Run: hermes setup")
-    return _ResolvedAuxRoute(client, final_model, resolved_provider, effective_provider)
-
 
 class _PreparedAuxRequest(NamedTuple):
     client: Any
@@ -7485,6 +7427,7 @@ class _PreparedAuxRequest(NamedTuple):
     effective_timeout: float
     effective_extra_body: dict[str, Any]
     base_info: str
+    strict_provider: bool = False
 
 
 def _prepare_aux_request(
@@ -7498,17 +7441,23 @@ def _prepare_aux_request(
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+    from agent.auxiliary_routing_policy import resolve_call_client, strict_provider_policy, strict_route_options
+    task_cfg = _get_auxiliary_task_config(task) if task else {}
+    strict_provider = strict_provider_policy(task_cfg)
+    options = (strict_route_options(task_cfg, provider=provider, model=model,
+                                   base_url=base_url, api_key=api_key, api_mode=api_mode)
+               if strict_provider else _resolve_task_provider_model(task, provider, model, base_url, api_key))
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = options
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
-    client, final_model, resolved_provider, effective_provider = _resolve_call_client(
+    client, final_model, resolved_provider, effective_provider = resolve_call_client(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        strict_provider=strict_provider,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
@@ -7552,7 +7501,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, strict_provider)
 
 
 class _LadderStep(NamedTuple):
@@ -7956,6 +7905,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[dict[str, Any]], route_info: Optional[dict[str, str]],
+    strict_provider: bool = False,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7969,6 +7919,11 @@ def _aux_recovery_ladder(
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
+    if strict_provider:
+        # Never enter account checks, credential refresh/pools or provider/model recovery.
+        if _is_connection_error(first_err):
+            _evict_cached_client_instance(client)
+        raise first_err
     client_is_nous = (resolved_provider == "nous"
                       or base_url_host_matches(base_info, "inference-api.nousresearch.com"))
     resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous)
@@ -8172,7 +8127,7 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info, strict_provider=req.strict_provider)
 
 
 def _call_llm_impl(
