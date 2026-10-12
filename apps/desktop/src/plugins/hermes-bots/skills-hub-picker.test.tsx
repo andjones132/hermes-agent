@@ -93,13 +93,34 @@ afterEach(() => {
 })
 
 describe('hub pick messages', () => {
+  it('shows native recovery when HTTP success and iframe load never produce a ready picker', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const frame = openHubBrowser()
+      // Browsers fire load even for a CSP-blocked error document.
+      fireEvent.load(frame)
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000) })
+      expect(frame.ownerDocument.querySelector('iframe')?.src).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/picker/skills/?embed=picker`)
+      fireEvent.load(frame.ownerDocument.querySelector('iframe')!)
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000) })
+      expect(screen.getByRole('alert').textContent).toContain('Skill hub failed to load')
+      expect(document.querySelector('iframe')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(document.querySelector('iframe')?.src).toBe(`${HUB_ORIGIN}/docs/skills?embed=picker`)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('uses GitHub Pages when the Vercel hub probe is unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }))
 
     const frame = openHubBrowser()
 
     await waitFor(() =>
-      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/picker/skills/?embed=picker`)
     )
   })
 
@@ -109,7 +130,7 @@ describe('hub pick messages', () => {
     const frame = openHubBrowser()
 
     await waitFor(() =>
-      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/picker/skills/?embed=picker`)
     )
   })
 
@@ -142,7 +163,7 @@ describe('hub pick messages', () => {
         await vi.advanceTimersByTimeAsync(8_000)
       })
 
-      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/docs/skills?embed=picker`)
+      expect(frame.getAttribute('src')).toBe(`${FALLBACK_HUB_ORIGIN}/hermes-agent/picker/skills/?embed=picker`)
     } finally {
       vi.restoreAllMocks()
       vi.useRealTimers()

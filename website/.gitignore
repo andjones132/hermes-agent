@@ -3,6 +3,7 @@
 
 # Production
 /build
+/build-picker
 
 # Generated files
 .docusaurus

@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import useBaseUrl from "@docusaurus/useBaseUrl";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import styles from "./styles.module.css";
 import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
@@ -489,12 +491,6 @@ function StatCard({ value, label, color }: { value: number; label: string; color
 
 const PAGE_SIZE = 60;
 
-// Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
-// `static/api/` ends up at `/docs/api/`. Hardcoding here is fine because the
-// same `baseUrl` is enforced repo-wide; if it ever changes, this is the only
-// place that needs to follow.
-const SKILLS_URL = "/docs/api/skills.json";
-const META_URL = "/docs/api/skills-meta.json";
 // Idle timeout for the catalog fetch — abort only when the transfer has
 // produced no bytes for this long, so slow-but-alive downloads survive.
 const CATALOG_STALL_TIMEOUT_MS = 45_000;
@@ -519,6 +515,11 @@ function buildSearchHaystack(s: Skill): string {
 }
 
 export default function SkillsDashboard() {
+  const { siteConfig } = useDocusaurusContext();
+  const standalonePicker = siteConfig.customFields?.standalonePicker === true;
+  // The direct Pages picker and canonical docs have different deployment bases.
+  const skillsUrl = useBaseUrl('/api/skills.json');
+  const metaUrl = useBaseUrl('/api/skills-meta.json');
   // Picker embed mode (?embed=picker): the page is being iframed by a host
   // app (Hermes desktop's Bot Mode agent editor) as a skill PICKER. Site
   // chrome is hidden via a CSS class and every card gains an
@@ -531,6 +532,15 @@ export default function SkillsDashboard() {
   const pickerMode =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("embed") === "picker";
+
+  // iframe load also fires for CSP-denied frames and unhydrated HTML. Signal
+  // only after React mounts the picker UI (including loading/error states).
+  // This contains no privileged data; the host validates origin AND source.
+  useEffect(() => {
+    if (pickerMode && window.parent !== window) {
+      window.parent.postMessage({ type: "hermes-hub-ready" }, "*");
+    }
+  }, [pickerMode]);
 
   const pickSkill = useCallback(
     (skill: Skill) => {
@@ -608,8 +618,8 @@ export default function SkillsDashboard() {
       try {
         armStallTimer();
         const [sk, mt] = await Promise.all([
-          readJson(SKILLS_URL),
-          readJson(META_URL).catch(() => ({})),
+          readJson(skillsUrl),
+          readJson(metaUrl).catch(() => ({})),
         ]);
         if (cancelled) return;
         const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
@@ -632,7 +642,7 @@ export default function SkillsDashboard() {
       ctrl.abort();
       if (stallTimer) clearTimeout(stallTimer);
     };
-  }, [reloadKey]);
+  }, [reloadKey, skillsUrl, metaUrl]);
 
   const retryCatalogLoad = () => {
     setLoadError(null);
@@ -829,7 +839,9 @@ export default function SkillsDashboard() {
               <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
                 Skills
               </span>
-              <Link className={styles.crossNavLink} to="/plugins">
+              <Link className={styles.crossNavLink} {...(standalonePicker
+                ? { href: "https://hermes-agent.nousresearch.com/docs/plugins" }
+                : { to: "/plugins" })}>
                 Plugins
               </Link>
             </nav>

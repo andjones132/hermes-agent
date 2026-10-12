@@ -204,6 +204,19 @@ jobs:
             cp website/build/llms-full.txt _site/llms-full.txt
           fi
 
+      # Keep the /docs/ proxy artifact intact. Direct Pages embeds require a
+      # project-prefixed router, JS/CSS paths, and catalog fetch URLs.
+      - name: Build GitHub Pages Skills picker
+        working-directory: website
+        run: |
+          npx --no-install docusaurus build --config docusaurus.picker.config.ts --out-dir build-picker
+          node scripts/check-picker-build.mjs build-picker /hermes-agent/picker/
+
+      - name: Stage GitHub Pages Skills picker
+        run: |
+          mkdir -p _site/picker
+          cp -r website/build-picker/* _site/picker/
+
       # Pages serves exactly the newest artifact, so each deploy used to delete
       # the previous build's content-hashed JS/CSS while edge caches (Vercel →
       # Fastly, max-age=300 + stale-while-revalidate=3600) kept serving HTML
@@ -236,6 +249,9 @@ jobs:
               cp -a "_site/docs/$d/." "_asset_retention/$d/"
             fi
           done
+          # The standalone picker uses its own hashes and cache subdirectory.
+          mkdir -p _asset_retention/picker/assets
+          cp -a _site/picker/assets/. _asset_retention/picker/assets/
           # 2) Drop pool entries no build has produced for 14 days — far
           #    beyond any edge-cache or open-tab horizon.
           find _asset_retention -type f -mtime +14 -delete
@@ -248,6 +264,7 @@ jobs:
               cp -R --update=none "_asset_retention/$d/." "_site/docs/$d/"
             fi
           done
+          cp -R --update=none _asset_retention/picker/assets/. _site/picker/assets/
           echo "retention pool:" && du -sh _asset_retention
           echo "deployed assets:" && du -sh _site/docs/assets
 

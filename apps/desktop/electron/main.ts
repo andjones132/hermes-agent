@@ -333,8 +333,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
-import { INSTALL_STAMP, installShape } from './install-stamp'
-import type { InstallStamp } from './install-stamp'
+import { INSTALL_STAMP, installShape, type InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -7210,14 +7209,15 @@ function focusedFrameOrigin(
   return null
 }
 
-/** The picker embed URL the hub iframe starts on (both deployments). */
+/** Exact deployment paths; retain the legacy Pages docs route during rollout. */
 function isHermesHubPickerUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
-    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
-
-    return isHubOrigin && isPickerPath
+    // Docusaurus emits a trailing slash; allow exactly one, not path prefixes.
+    const pathname = parsed.pathname.replace(/\/$/, '')
+    return (parsed.origin === HERMES_HUB_ORIGIN && pathname === '/docs/skills') ||
+      (parsed.origin === HERMES_HUB_FALLBACK_ORIGIN &&
+        (pathname === '/hermes-agent/picker/skills' || pathname === '/hermes-agent/docs/skills'))
   } catch {
     return false
   }

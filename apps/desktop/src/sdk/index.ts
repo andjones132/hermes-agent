@@ -1800,6 +1800,7 @@ export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
+export { HubPickerFrame } from '@/components/hub-picker-frame'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.
@@ -2055,12 +2056,11 @@ export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
 export type { StatusResponse } from '@/types/hermes'
-/** Public SDK name for the shared gateway wire event; kept stable for plugins. */
-export type { GatewayEvent as RpcEvent } from '@hermes/shared'
+/** Gateway wire event and `session.list` / `profiles.list` rows from `tui_gateway/contracts`.
+ *  `RpcEvent` remains the stable public SDK name for `GatewayEvent`. */
+export type { GatewayEvent as RpcEvent, ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
-/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
-export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'

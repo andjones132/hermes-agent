@@ -59,3 +59,13 @@ jobs:
         # Same pattern Docusaurus uses internally (build:fast --locale en).
         run: npm run build:fast
         working-directory: website
+
+      - name: Typecheck website
+        run: npm run typecheck
+        working-directory: website
+
+      - name: Build and check GitHub Pages Skills picker
+        working-directory: website
+        run: |
+          npx --no-install docusaurus build --config docusaurus.picker.config.ts --out-dir build-picker
+          node scripts/check-picker-build.mjs build-picker /hermes-agent/picker/
