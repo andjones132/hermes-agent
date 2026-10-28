@@ -121,6 +121,58 @@ A worker that is blocked on `t_parent` and creates a support card for the missin
 
 They also coexist inside one run. A kanban task executes in an isolated managed worker under the profile's gateway, and its `delegate_task` children are reserved by that gateway under the worker's execution: each child gets its own session (listed as a subagent of the card's session), counts against `delegation.max_concurrent_children` and `delegation.max_spawn_depth`, returns its result inside the card's turn, and ends with the worker. If the gateway goes down mid-child, the child is retired, never resumed. Work that must outlive the gateway, or needs its own reviewer, still belongs in child cards (`kanban_create` with `parents`).
 
+## Scoped worker routes and fallback
+
+Automatic Kanban workers can use a route and fallback policy separate from
+interactive conversations. Configure the **worker's owning profile**:
+
+```bash
+hermes config set kanban.worker_provider openai-codex
+hermes config set kanban.worker_model YOUR_ACCOUNT_SUPPORTED_MODEL
+hermes config set kanban.worker_fallback_providers '[]'
+hermes config set kanban.worker_fail_fast_on_route_unavailable true
+```
+
+Verify model availability in the selected account before choosing the model.
+These settings neither authorize inference spending nor change the profile's
+interactive model, global provider definitions, credentials or global fallback list.
+
+- A card's explicit provider/model overrides win over the corresponding worker
+  default. Empty worker defaults inherit the profile route.
+- `worker_fallback_providers: null` (the default) inherits the profile fallback
+  chain; `[]` disables it, including legacy `fallback_model`. A nonempty list
+  replaces it and must contain valid fallback entries. Malformed values fail
+  before provider resolution instead of inheriting a potentially paid route.
+- `worker_fail_fast_on_route_unavailable: true` clears an inherited worker fallback
+  chain. A contradictory nonempty explicit list is rejected before resolution.
+  This setting does not prohibit bounded same-provider retries or validate the
+  upstream server's own routing/billing.
+- Automatic Kanban execution uses the mandatory managed-worker path. Its frozen
+  policy supplies both credential-resolution and agent-initialization fallback
+  consumers. The auxiliary **top-level main fallback ladder** also uses that
+  policy; explicit auxiliary routes and their other recovery behavior remain
+  separate. `auxiliary.free_only` is not a universal spend firewall.
+- With scoped fallback disabled, resolution-time credential errors retain their
+  structured flags and explain the route, failure and disabled fallback. Terminal
+  non-retryable managed-worker authentication/model-access errors append the same
+  explanation when runtime evidence confirms no fallback was attempted. Existing
+  partial output and accounting are preserved.
+
+### Installation is not process activation
+
+A running gateway imports and caches worker-policy code. Replacing source files
+or reading settings in a fresh CLI does **not** prove that owner uses the new
+code; existing frozen worker policies are not retrofitted. After a supported,
+separately authorized owner turnover, create a new policy and verify its effective
+route and empty fallback chain. Do not restart live conversations merely to make
+an activation check pass. Fresh-process offline tests can verify the installed
+source/config without invoking inference, but cannot certify a warm owner.
+
+To undo this opt-in, restore the previous values with `hermes config set`, or use
+`hermes config unset` for keys previously absent. Reverting settings is not an
+in-flight policy migration; rollback code/process activation requires the same
+care as rollout.
+
 ## Core concepts
 
 - **Board** — a standalone queue of tasks with its own SQLite DB, workspaces

@@ -40,24 +40,41 @@ def _kanban_worker_route_params(task, config):
     return route
 
 
-def _kanban_worker_policy_config(config):
-    """Scoped config frozen into an automatic Kanban worker session.
+def _validate_worker_controls(kanban):
+    """Reject misspelled policy shapes instead of silently changing the spend boundary."""
+    for key in ('worker_provider', 'worker_model'):
+        value = kanban.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f'kanban.{key} must be a string or null')
+    fail_fast = kanban.get('worker_fail_fast_on_route_unavailable', False)
+    if type(fail_fast) is not bool:
+        raise ValueError('kanban.worker_fail_fast_on_route_unavailable must be a boolean')
+    declared = kanban.get('worker_fallback_providers')
+    if declared is not None:
+        if not isinstance(declared, list):
+            raise ValueError('kanban.worker_fallback_providers must be a list or null')
+        for entry in declared:
+            if not isinstance(entry, dict) or any(
+                    not isinstance(entry.get(key), str) or not entry[key].strip()
+                    for key in ('provider', 'model')):
+                raise ValueError('kanban.worker_fallback_providers entries require provider/model strings')
+        if fail_fast and declared:
+            raise ValueError('kanban.worker_fallback_providers conflicts with worker_fail_fast_on_route_unavailable')
+    return declared, fail_fast
 
-    ``kanban.worker_fallback_providers: []`` is an explicit fail-closed scope:
-    automatic workers must not inherit the profile's top-level paid fallback
-    chain or legacy ``fallback_model`` entry. The input config is not mutated.
+
+def _kanban_worker_policy_config(config):
+    """Freeze a detached worker scope: None inherits, [] disables even legacy fallback_model.
+
+    Fail-fast also disables inheritance; an explicit nonempty chain contradicts it.
     """
-    config = json.loads(json.dumps(config or {}))
-    if not isinstance(config, dict):
-        config = {}
-    raw_kanban = config.get('kanban')
+    raw_kanban = (config or {}).get('kanban')
     kanban = raw_kanban if isinstance(raw_kanban, dict) else {}
-    if 'worker_fallback_providers' in kanban or kanban.get('worker_fail_fast_on_route_unavailable') is True:
-        from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
-        declared = kanban.get('worker_fallback_providers') if 'worker_fallback_providers' in kanban else []
-        scoped = scoped_fallback_chain(get_fallback_chain(config), declared,
-                                       pinned=True, owner='kanban worker')
-        config['fallback_providers'] = scoped or []
+    declared, fail_fast = _validate_worker_controls(kanban)
+    config = json.loads(json.dumps(config or {}))
+    if declared is not None or fail_fast:
+        from hermes_cli.fallback_config import get_fallback_chain
+        config['fallback_providers'] = get_fallback_chain({'fallback_providers': declared}) if declared else []
         config['fallback_model'] = None
     return config
 
@@ -327,6 +344,7 @@ def _run_worker_turns(agent, frame, history):
     code, last_output = 1, ''
     try:
         result = _run_task_turns(agent, frame, history, context)
+        result = _scoped_route_failure_result(agent, frame, result)
         code = turn_exit_code(result, kanban_worker=True)
         last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
         return result
@@ -335,6 +353,53 @@ def _run_worker_turns(agent, frame, history):
         raise
     finally:
         _record_worker_result(context, code, last_output)
+
+
+def _scoped_route_failure_result(agent, frame, result):
+    """Annotate a managed Kanban terminal route refusal, never the shared chat/error path.
+
+    Request-time failures bypass the credential resolver's diagnostic. Keep the original
+    copy (including any delivered partial work), verdict and accounting; append only the
+    frozen worker policy's explanation before recording/transporting the terminal result.
+    """
+    if (not isinstance(result, dict) or result.get('failed') is not True
+            or result.get('interrupted') or result.get('failure_retryable') is not False
+            or result.get('failure_reason') not in ('model_not_found', 'model_entitlement', 'auth', 'auth_permanent')):
+        return result
+    policy = frame['policy']
+    if policy.get('source') != 'kanban':
+        return result
+    config = json.loads(policy['config_json'])
+    kanban = config.get('kanban') or {}
+    if not _worker_primary_route_only(agent, policy, config):
+        return result
+    if kanban.get('worker_fallback_providers') == []:
+        disabled_by = 'kanban.worker_fallback_providers=[]'
+    elif kanban.get('worker_fail_fast_on_route_unavailable') is True:
+        disabled_by = 'kanban.worker_fail_fast_on_route_unavailable=true'
+    else:
+        return result
+    provider, model = agent.provider, agent.model
+    auth_class = ' (ChatGPT/Codex OAuth subscription route)' if provider == 'openai-codex' else ''
+    diagnostic = (f"{provider}/{model}{auth_class}: {result['failure_reason']}; automatic paid fallback disabled by "
+                  f"{disabled_by}; no other provider attempted (no paid fallback providers were attempted)")
+    return {**result, 'final_response': f"{result.get('final_response') or ''}\n\n{diagnostic}"}
+
+
+def _worker_primary_route_only(agent, policy, config):
+    """No-fallback wording needs agreement from the frozen, hydrated and actual agent routes.
+
+    Even an exhausted/disabled nonempty chain is evidence against claiming no other attempt.
+    The immutable launch identity also guards an already-switched runtime with a cleared chain.
+    """
+    construct = json.loads(policy.get('request_json') or '{}').get('construct_v1') or {}
+    kanban = config.get('kanban') or {}
+    chains = (config.get('fallback_providers'), config.get('fallback_model'),
+              kanban.get('worker_fallback_providers'), construct.get('fallback_model'),
+              getattr(agent, '_fallback_chain', None), getattr(agent, '_fallback_model', None),
+              getattr(agent, '_fallback_activated', False), getattr(agent, '_fallback_index', 0))
+    return (not any(chains) and agent.provider == (config.get('model') or {}).get('provider')
+            and agent.model == policy.get('model'))
 
 
 def record_start_failure(frame, exc):

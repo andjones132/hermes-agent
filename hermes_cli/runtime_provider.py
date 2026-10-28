@@ -1169,7 +1169,22 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
         from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
-        for entry in get_fallback_chain(config):
+        chain = get_fallback_chain(config)
+        kanban = (config or {}).get("kanban") or {}
+        if (not chain and isinstance(kanban, dict)
+                and (kanban.get("worker_fallback_providers") == []
+                     or kanban.get("worker_fail_fast_on_route_unavailable") is True)):
+            auth_class = " (ChatGPT/Codex OAuth subscription route)" if requested == "openai-codex" else ""
+            disabled_by = ("kanban.worker_fallback_providers=[]" if kanban.get("worker_fallback_providers") == []
+                           else "kanban.worker_fail_fast_on_route_unavailable=true")
+            # Keep the original structured error (retry/relogin/exit flags included).
+            primary_exc.args = (
+                f"{requested}/{target_model}{auth_class}: {primary_exc} "
+                f"[{primary_exc.code or 'auth_error'}]; automatic paid fallback disabled by "
+                f"{disabled_by}; no other provider attempted "
+                "(no paid fallback providers were attempted)",
+            )
+        for entry in chain:
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()
             if not provider or not model:

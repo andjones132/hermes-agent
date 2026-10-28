@@ -4477,13 +4477,17 @@ def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
 ) -> tuple[Optional[Any], Optional[str], str]:
-    """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
-    user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
-    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
+    """Main fallback policy for auto auxiliary calls; Kanban turns consume the frozen
+    worker chain, while ordinary calls keep the live canonical chain (legacy fallback_model included)."""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
-        chain = get_fallback_chain(load_config_readonly())
+        from gateway.session_policy import active_policy
+        policy = active_policy()
+        # Managed execs already bind all config readers. In-process Kanban turns only
+        # bind the auxiliary section, so the top-level chain must use their frozen scope.
+        config = policy.config() if policy is not None and policy.source == 'kanban' else load_config_readonly()
+        chain = get_fallback_chain(config)
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
         return None, None, ""
@@ -4494,12 +4498,8 @@ def _try_main_fallback_chain(
     tried: list[str] = []
     min_ctx = _task_minimum_context_length(task)
     for i, entry in enumerate(chain):
-        if not isinstance(entry, dict):
-            continue
-        fb_provider = str(entry.get("provider") or "").strip()
-        fb_model = str(entry.get("model") or "").strip()
-        if not fb_provider or not fb_model:
-            continue
+        fb_provider = entry["provider"]
+        fb_model = entry["model"]
         fb_norm = fb_provider.lower()
         label = f"fallback_providers[{i}]({fb_provider})"
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))

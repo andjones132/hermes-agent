@@ -23,10 +23,11 @@ def construct_inputs(authority, policy, chat_id):
 def _fallback_chain(authority, policy):
     """The chain ``_build_fresh_agent`` gives an in-process turn. Ordinary sessions keep the
     profile refresh semantics (re-read per turn, last-known-good per home); a config-only session
-    takes its frozen explicit snapshot (never the profile); safe mode carries none."""
+    takes its frozen explicit snapshot (never the profile); Kanban workers also consume their
+    frozen scoped chain so construction cannot restore disabled profile fallbacks; safe mode carries none."""
     if policy.safe_mode:
         return None
-    if policy.ignore_user_config:
+    if policy.ignore_user_config or policy.source == 'kanban':
         from hermes_cli.fallback_config import get_fallback_chain
         return get_fallback_chain(policy.config(authority)) or None
     refresh = getattr(authority.runner, '_refresh_fallback_model', None)
