@@ -11,6 +11,57 @@ import sqlite3
 from hermes_state_runtime import RuntimeStoreError
 
 
+def _clean_worker_route_value(value):
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _kanban_worker_route_params(task, config):
+    """Launch route for an automatic Kanban worker.
+
+    Per-card provider/model overrides are intentional pins and win. Otherwise a
+    profile may scope automatic workers to a safe subscription route with
+    ``kanban.worker_provider`` / ``kanban.worker_model`` without changing the
+    interactive chat default.
+    """
+    raw_kanban = config.get('kanban') if isinstance(config, dict) else None
+    kanban = raw_kanban if isinstance(raw_kanban, dict) else {}
+    route = {}
+    provider = (_clean_worker_route_value(getattr(task, 'provider_override', None))
+                or _clean_worker_route_value(kanban.get('worker_provider')))
+    model = (_clean_worker_route_value(getattr(task, 'model_override', None))
+             or _clean_worker_route_value(kanban.get('worker_model')))
+    reasoning = _clean_worker_route_value(getattr(task, 'reasoning_effort', None))
+    if provider:
+        route['provider'] = provider
+    if model:
+        route['model'] = model
+    if reasoning:
+        route['reasoning'] = reasoning
+    return route
+
+
+def _kanban_worker_policy_config(config):
+    """Scoped config frozen into an automatic Kanban worker session.
+
+    ``kanban.worker_fallback_providers: []`` is an explicit fail-closed scope:
+    automatic workers must not inherit the profile's top-level paid fallback
+    chain or legacy ``fallback_model`` entry. The input config is not mutated.
+    """
+    config = json.loads(json.dumps(config or {}))
+    if not isinstance(config, dict):
+        config = {}
+    raw_kanban = config.get('kanban')
+    kanban = raw_kanban if isinstance(raw_kanban, dict) else {}
+    if 'worker_fallback_providers' in kanban or kanban.get('worker_fail_fast_on_route_unavailable') is True:
+        from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+        declared = kanban.get('worker_fallback_providers') if 'worker_fallback_providers' in kanban else []
+        scoped = scoped_fallback_chain(get_fallback_chain(config), declared,
+                                       pinned=True, owner='kanban worker')
+        config['fallback_providers'] = scoped or []
+        config['fallback_model'] = None
+    return config
+
+
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
@@ -50,11 +101,9 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
-    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
-        if value:
-            params_policy[name] = value
+    params_policy.update(_kanban_worker_route_params(task, config))
     private = {}
-    policy = build_policy(params_policy, config, private_secrets=private)
+    policy = build_policy(params_policy, _kanban_worker_policy_config(config), private_secrets=private)
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))

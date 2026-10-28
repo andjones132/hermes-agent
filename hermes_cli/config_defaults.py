@@ -754,10 +754,10 @@ DEFAULT_CONFIG = {
         # falling back; clamped [0,6]. Matters for pinned calls (MoA advisors) where provider
         # fallback is not meaningful recovery.
         "transient_retries": 2,
-        # When true, the auto-chain's OpenRouter step is skipped unless the fallback model ends in
-        # ":free" — a PAID lane is never used for background aux traffic even with
-        # OPENROUTER_API_KEY set.
-        "free_only": False,
+        # When true, the auto-chain's OpenRouter step is skipped unless the
+        # fallback model ends in ":free" — a PAID lane is never used for
+        # background aux traffic even with OPENROUTER_API_KEY set.
+        "free_only": True,
         # Override the auto-chain's OpenRouter fallback model (default google/gemini-3.6-flash,
         # PAID). Pair e.g. "nvidia/nemotron-3-ultra-550b-a55b:free" with free_only: true. A one-time
         # WARNING is logged whenever a non-":free" model is engaged.
@@ -1908,6 +1908,14 @@ DEFAULT_CONFIG = {
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,
+        # Optional automatic-worker launch route. Empty = use the profile/default route. Set these
+        # per profile to pin unattended Kanban workers without changing interactive chat defaults.
+        "worker_provider": "",
+        "worker_model": "",
+        # Optional automatic-worker fallback scope. None = inherit the profile fallback chain;
+        # [] = fail closed with no inherited paid/provider fallback entries.
+        "worker_fallback_providers": None,
+        "worker_fail_fast_on_route_unavailable": False,
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
